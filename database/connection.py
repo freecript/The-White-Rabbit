@@ -11,7 +11,7 @@ async def create_tables():
 
     # Відкриваємо підключення до бази даних.
     async with aiosqlite.connect(DATABASE_NAME) as database:
-        # Виконуємо SQL-команду створення таблиці users.
+        # Створюємо таблицю користувачів.
         await database.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -24,5 +24,19 @@ async def create_tables():
             """
         )
 
-        # Зберігаємо зміни в базі даних.
+        # Створюємо таблицю нагадувань.
+        await database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                remind_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # Зберігаємо зміни після створення обох таблиць.
         await database.commit()
