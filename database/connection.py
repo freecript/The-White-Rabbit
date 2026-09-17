@@ -1,10 +1,10 @@
 """Підключення до бази даних і створення таблиць."""
 
+import os
+
 import aiosqlite
 
-
-DATABASE_NAME = "reminders.db"
-
+DATABASE_NAME = os.getenv("DATABASE_PATH", "reminders.db")
 
 async def create_tables():
     """Створює необхідні таблиці, якщо їх ще немає."""
