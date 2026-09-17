@@ -8,18 +8,39 @@ from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove # Тип M
 from dotenv import load_dotenv # Функція для завантаження змінних із файлу .env.
 from aiogram.enums import ParseMode # щоб можна було додати HTML теги
 from keyboards.main import main_keyboard # імпорт кнопок головного меню  
-
 from database.connection import create_tables # таблиці
-from database.queries import add_reminder, add_user, get_all_users # функція для додавання користувача до бази даних
+from zoneinfo import ZoneInfo  # Робота з часовими поясами.
 
-from datetime import datetime, timedelta # робота з датою
+# Функції для роботи з користувачами та нагадуваннями.
+from database.queries import (
+    add_reminder,
+    add_user,
+    delete_reminder,
+    get_all_reminders,
+    get_all_users,
+    get_due_reminders,
+    get_user_reminders,
+    mark_reminder_as_sent,
+    should_show_reminder_hint,
+) 
+
+from datetime import datetime, timedelta # робота з датою і часом
 from aiogram.fsm.context import FSMContext # Керування станами користувача.
 from states.reminder import ReminderForm # Етапи створення нагадування.
-from keyboards.reminders import confirmation_keyboard, date_keyboard # клавіатура та текст нагадування у FSM.
+
+# Клавіатури для створення та керування нагадуваннями.
+from keyboards.reminders import (
+    confirmation_keyboard,
+    date_keyboard,
+    reminders_list_keyboard,
+) 
+
+from html import escape # Захищає текст користувача під час використання HTML-тегів.
 
 load_dotenv() # Читаємо дані з файлу .env.
 TOKEN = os.getenv("BOT_TOKEN") # Отримуємо значення BOT_TOKEN із файлу .env.
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) # адмін панель 
+KYIV_TIMEZONE = ZoneInfo("Europe/Kyiv") # Робота з часовими поясами.
 
 bot = Bot(token=TOKEN) # Створюємо об’єкт бота та передаємо йому токен.
 dp = Dispatcher() # Створюємо диспетчер
@@ -27,7 +48,12 @@ dp = Dispatcher() # Створюємо диспетчер
 
 # обробник команди /start.Коли користувач надішле /start,Dispatcher викличе функцію start_handler.
 @dp.message(CommandStart())
-async def start_handler(message: Message):
+async def start_handler(
+    message: Message,
+    state: FSMContext,
+):
+    # Скидаємо незавершене створення нагадування.
+    await state.clear()
     if message.from_user:
         await add_user(
             telegram_id=message.from_user.id,
@@ -45,18 +71,146 @@ async def start_handler(message: Message):
     )
 
 
+@dp.message(F.text == "❓ Допомога🚪")
+async def help_handler(message: Message):
+    """Показує коротку інструкцію користувачу."""
+
+    await message.answer(
+        "<b>🚪 Як користуватися ботом:</b>\n\n"
+        "1️⃣ Натисни «➕ Створити нагадування 🐇».\n"
+        "2️⃣ Напиши, про що тобі нагадати.\n"
+        "3️⃣ Обери дату та введи час.\n"
+        "4️⃣ Перевір і збережи нагадування.\n\n"
+        "/start — запускає бота, скидає незавершену дію та відкриває головне меню.\n"
+        "/cancel — скасовує поточне створення нагадування, очищає введені дані та повертає головне меню.\n\n"
+        "📜 У розділі «Мої нагадування» можна переглянути "
+        "або видалити активні нагадування.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard,
+    )
+
+
 @dp.message(F.text == "➕ Створити нагадування 🐇")
-async def create_reminder_start(message: Message, state: FSMContext):
+async def create_reminder_start(
+    message: Message,
+    state: FSMContext,
+):
     # Очищаємо попередній незавершений діалог.
     await state.clear()
 
     # Запам’ятовуємо, що зараз очікуємо текст нагадування.
     await state.set_state(ReminderForm.text)
 
+    message_text = "🐇 Про що тобі нагадати?"
+
+    # Додаємо приклад лише під час першого створення нагадування.
+    if message.from_user:
+        show_hint = await should_show_reminder_hint(
+            message.from_user.id
+        )
+
+        if show_hint:
+            message_text += "\n\nНаприклад: зателефонувати лікарю"
+
     await message.answer(
-        "🐇 Про що тобі нагадати?\n\n"
-        "Наприклад: зателефонувати лікарю",
+        message_text,
         reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@dp.message(F.text == "📜 Мої нагадування⏱️")
+async def show_user_reminders(message: Message):
+    """Показує активні нагадування користувача."""
+
+    if not message.from_user:
+        return
+
+    reminders = await get_user_reminders(message.from_user.id)
+
+    if not reminders:
+        await message.answer(
+            "📭 У тебе поки немає активних нагадувань.",
+            reply_markup=main_keyboard,
+        )
+        return
+
+    lines = ["<b>📜 Твої нагадування:</b>"]
+
+    for number, reminder in enumerate(reminders, start=1):
+        reminder_id, reminder_text, remind_at = reminder
+
+        reminder_datetime = datetime.fromisoformat(remind_at)
+        formatted_datetime = reminder_datetime.strftime("%d.%m.%Y о %H:%M")
+
+        lines.append(
+            f"<b>{number}. 🐇 {escape(reminder_text)}</b>\n"
+            f"⏱️ {formatted_datetime}"
+        )
+
+    reminder_ids = [
+        reminder[0]
+        for reminder in reminders
+    ]
+
+    await message.answer(
+        "\n\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=reminders_list_keyboard(reminder_ids),
+    )
+
+
+@dp.callback_query(F.data.startswith("delete_reminder:"))
+async def delete_user_reminder(callback: CallbackQuery):
+    """Видаляє вибране нагадування користувача."""
+
+    callback_data = callback.data or ""
+
+    try:
+        reminder_id = int(callback_data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Не вдалося визначити нагадування.")
+        return
+
+    await delete_reminder(
+        reminder_id=reminder_id,
+        telegram_id=callback.from_user.id,
+    )
+
+    await callback.answer("Нагадування видалено.")
+
+    if callback.message:
+        await callback.message.delete()
+
+        await callback.message.answer(
+            "❌ Нагадування видалено.\n\n"
+            "Натисни «📜 Мої нагадування⏱️», щоб оновити список.",
+            reply_markup=main_keyboard,
+        )
+
+
+@dp.message(Command("cancel"))
+async def cancel_command(
+    message: Message,
+    state: FSMContext,
+):
+    """Скасовує поточне створення нагадування."""
+
+    current_state = await state.get_state()
+
+    # Якщо користувач зараз нічого не створює.
+    if current_state is None:
+        await message.answer(
+            "🐇 Зараз немає дії, яку потрібно скасувати.",
+            reply_markup=main_keyboard,
+        )
+        return
+
+    # Видаляємо тимчасово збережені дані.
+    await state.clear()
+
+    await message.answer(
+        "❌ Створення нагадування скасовано.",
+        reply_markup=main_keyboard,
     )
 
 
@@ -92,7 +246,7 @@ async def process_reminder_text(message: Message, state: FSMContext):
 @dp.message(ReminderForm.date)
 async def process_reminder_date(message: Message, state: FSMContext):
     message_text = (message.text or "").strip()
-    today = datetime.now().date()
+    today = datetime.now(KYIV_TIMEZONE).date()
 
     # Скасовуємо створення нагадування.
     if message_text == "❌ Скасувати":
@@ -195,10 +349,11 @@ async def process_reminder_time(message: Message, state: FSMContext):
     reminder_datetime = datetime.combine(
         selected_date,
         selected_time,
+        tzinfo=KYIV_TIMEZONE,
     )
 
     # Перевіряємо, що вибраний момент ще не минув.
-    if reminder_datetime <= datetime.now():
+    if reminder_datetime <= datetime.now(KYIV_TIMEZONE):
         await message.answer(
             "⏳Цей час уже минув. Введи майбутній час."
         )
@@ -260,6 +415,59 @@ async def save_reminder(
         )
 
 
+@dp.callback_query(
+    ReminderForm.confirmation,
+    F.data == "reminder_cancel",
+)
+async def cancel_reminder(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    # Очищаємо всі тимчасово збережені дані нагадування.
+    await state.clear()
+
+    # Закриваємо очікування натискання кнопки.
+    await callback.answer("Створення скасовано.")
+
+    if callback.message:
+        # Прибираємо старі кнопки підтвердження.
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+        # Повертаємо користувача до головного меню.
+        await callback.message.answer(
+            "❌ Створення нагадування скасовано.🕳️",
+            reply_markup=main_keyboard,
+        )
+
+
+@dp.callback_query(
+    ReminderForm.confirmation,
+    F.data == "reminder_edit",
+)
+async def edit_reminder(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    # Видаляємо раніше введені дані.
+    await state.clear()
+
+    # Знову очікуємо текст нагадування.
+    await state.set_state(ReminderForm.text)
+
+    # Закриваємо очікування натискання кнопки.
+    await callback.answer()
+
+    if callback.message:
+        # Прибираємо старі кнопки підтвердження.
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+        # Просимо користувача ввести новий текст.
+        await callback.message.answer(
+            "✏️ Напиши новий текст нагадування: ♟️",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+
 @dp.message(Command("admin_users"))  # адмін панель
 async def admin_users_handler(message: Message):
     if not message.from_user or message.from_user.id != ADMIN_ID:
@@ -287,11 +495,101 @@ async def admin_users_handler(message: Message):
 
     await message.answer("\n\n".join(lines))
 
+
+@dp.message(Command("admin_reminders"))
+async def admin_reminders_handler(message: Message):
+    
+
+    
+    if not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+
+    reminders = await get_all_reminders()
+
+    if not reminders:
+        await message.answer(".")
+        return
+
+    message_text = "<b>📜 :</b>"
+
+    for reminder in reminders:
+        (
+            reminder_id,
+            telegram_id,
+            reminder_text,
+            remind_at,
+            status,
+        ) = reminder
+
+        reminder_datetime = datetime.fromisoformat(remind_at)
+        formatted_datetime = reminder_datetime.strftime(
+            "%d.%m.%Y о %H:%M"
+        )
+
+        status_text = (
+            "⏳ Очікує"
+            if status == "pending"
+            else "✅ Надіслано"
+        )
+
+        reminder_block = (
+            f"<b>№{reminder_id}. 🐇 {escape(reminder_text)}</b>\n"
+            f'👤 Telegram ID: <a href="tg://user?id={telegram_id}">{telegram_id}</a>\n'
+            f"⏱️ {formatted_datetime}\n"
+            f"Статус: {status_text}"
+        )
+
+        # Telegram дозволяє приблизно 4096 символів в одному повідомленні.
+        if len(message_text) + len(reminder_block) > 3900:
+            await message.answer(
+                message_text,
+                parse_mode=ParseMode.HTML,
+            )
+            message_text = reminder_block
+        else:
+            message_text += f"\n\n{reminder_block}"
+
+    await message.answer(
+        message_text,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def reminder_scheduler():
+    """Перевіряє та надсилає готові нагадування."""
+
+    while True:
+        current_time = datetime.now(KYIV_TIMEZONE).isoformat()
+
+        reminders = await get_due_reminders(current_time)
+
+        for reminder in reminders:
+            reminder_id, telegram_id, reminder_text = reminder
+
+            try:
+                await bot.send_message(
+                    chat_id=telegram_id,
+                    text=f"⏱️ <b>{escape(reminder_text)}</b>",
+                    parse_mode=ParseMode.HTML,
+                )
+
+                await mark_reminder_as_sent(reminder_id)
+
+            except Exception as error:
+                print(f"Не вдалося надіслати нагадування: {error}")
+
+        # Чекаємо 10 секунд перед наступною перевіркою.
+        await asyncio.sleep(10)
+
+
 # коли бот працює в терміналі пишеться "Start...",
 # python -m watchfiles --filter python ".venv\Scripts\python.exe main.py" . - для запуску із перезавантаженням після змін
 async def main():
     # Створюємо таблиці перед запуском бота.
     await create_tables()
+
+    # Запускаємо перевірку нагадувань у фоновому режимі.
+    asyncio.create_task(reminder_scheduler())
 
     print("Start...")
     await dp.start_polling(bot)

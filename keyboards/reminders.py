@@ -47,3 +47,23 @@ confirmation_keyboard = InlineKeyboardMarkup(
         ],
     ]
 )
+
+
+def reminders_list_keyboard(
+    reminder_ids: list[int],
+) -> InlineKeyboardMarkup:
+    """Створює кнопки для видалення нагадувань."""
+
+    keyboard = []
+
+    for number, reminder_id in enumerate(reminder_ids, start=1):
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=f"❌ Видалити нагадування №{number}",
+                    callback_data=f"delete_reminder:{reminder_id}",
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

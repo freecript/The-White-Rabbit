@@ -19,10 +19,29 @@ async def create_tables():
                 telegram_id INTEGER UNIQUE NOT NULL,
                 username TEXT,
                 full_name TEXT,
+                reminder_hint_shown INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+
+        # Отримуємо список колонок таблиці users.
+        cursor = await database.execute("PRAGMA table_info(users)")
+        user_columns = await cursor.fetchall()
+
+        column_names = [
+            column[1]
+            for column in user_columns
+        ]
+
+        # Додаємо нову колонку до вже наявної таблиці users.
+        if "reminder_hint_shown" not in column_names:
+            await database.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN reminder_hint_shown INTEGER NOT NULL DEFAULT 0
+                """
+            )
 
         # Створюємо таблицю нагадувань.
         await database.execute(
@@ -38,5 +57,5 @@ async def create_tables():
             """
         )
 
-        # Зберігаємо зміни після створення обох таблиць.
+        # Зберігаємо всі зміни в базі даних.
         await database.commit()
